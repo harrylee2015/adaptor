@@ -15,4 +15,3 @@ func newGrpcConn(host string) *grpc.ClientConn {
 	}
 	return conn
 }
-
