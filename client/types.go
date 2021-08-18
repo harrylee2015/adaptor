@@ -186,6 +186,9 @@ type RequestTx struct {
 	Tx string `json:"tx"`
 }
 
+type RequestH struct {
+	Height string `json:"height"`
+}
 type TxSize struct {
 	Size string `json:"size"`
 }
@@ -224,3 +227,12 @@ type ReplyTxHash struct {
 type ReplyTx struct {
 	TxContent string `json:"txcontent"`
 }
+
+//type BlockInfo struct {
+//	Height     int      `json:"height"`
+//	TxCount    int      `json:"txcount"`
+//	Hash       string   `json:"hash"`
+//	PreHash    string   `json:"prehash"`
+//	CreateTime string   `json:"createtime"`
+//	TxHashList []string `json:"txhashlist"` // 交易hash列表
+//}

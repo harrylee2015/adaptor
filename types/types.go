@@ -9,6 +9,8 @@ import (
 //配置文件模板
 type Config struct {
 	JsonRpc []string `yaml:"jsonrpc"`
+	GRpc []string `yaml:"grpc"`
+	Limiter int `yaml:"limiter"`
 }
 
 func ReadConf(path string) *Config {

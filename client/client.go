@@ -1,6 +1,8 @@
 package client
 
 import (
+	. "adaptor/common"
+	"context"
 	"fmt"
 	"github.com/33cn/chain33/common"
 	"github.com/33cn/chain33/common/address"
@@ -27,6 +29,17 @@ var txPool = sync.Pool{
 		tx := &types.Transaction{Execer: []byte("user.write")}
 		return tx
 	},
+}
+
+//未发送成功的交易
+var UnSendedTxMap sync.Map
+
+//限流器
+var Limiter *ChannelLimiter
+
+func InitLimiter(limit int) *ChannelLimiter {
+	Limiter = NewChannelLimiter(limit)
+	return Limiter
 }
 
 func getprivkey(key string) crypto.PrivKey {
@@ -71,22 +84,34 @@ func RandStringBytes(n int) []byte {
 
 type Client struct {
 	LoaderBalancer map[int]*JSONClient
+	GrpcBalancer   []types.Chain33Client
 	sync.RWMutex
 	len int
 }
 
-func NewClient(urls []string) *Client {
+func NewClient(jsonurls, grpcurls []string) *Client {
 	balancer := make(map[int]*JSONClient)
-	for i, url := range urls {
+	grpcBalancer := make([]types.Chain33Client, len(grpcurls))
+	for i, url := range jsonurls {
 		balancer[i] = NewJSONClient("", url)
 	}
-	return &Client{LoaderBalancer: balancer, len: len(urls)}
+	for i, url := range grpcurls {
+		gcli := types.NewChain33Client(newGrpcConn(url))
+		grpcBalancer[i] = gcli
+	}
+	return &Client{LoaderBalancer: balancer, GrpcBalancer: grpcBalancer, len: len(grpcurls)}
 }
 func (c *Client) GetLBClient() *JSONClient {
 	c.RLock()
 	jsonClient := c.LoaderBalancer[rand.Intn(c.len)]
 	c.RUnlock()
 	return jsonClient
+}
+func (c *Client) GetGrpcClient() types.Chain33Client {
+	c.RLock()
+	grpcClient := c.GrpcBalancer[rand.Intn(c.len)]
+	c.RUnlock()
+	return grpcClient
 }
 
 // 获取最新区块高度
@@ -109,7 +134,7 @@ func (c *Client) GetNodeCount(w rest.ResponseWriter, r *rest.Request) {
 
 // 往链交易池推送交易总数
 func (c *Client) GetTxAccepted(w rest.ResponseWriter, r *rest.Request) {
-	w.WriteJson(&ReplyAcceptedTxCount{Result: strconv.FormatUint(atomic.LoadUint64(&count),10)})
+	w.WriteJson(&ReplyAcceptedTxCount{Result: strconv.FormatUint(atomic.LoadUint64(&count), 10)})
 }
 
 // 已经打包确认交易总数
@@ -124,7 +149,7 @@ func (c *Client) GetTxConfirmed(w rest.ResponseWriter, r *rest.Request) {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteJson(&ReplyConfirmedTxCount{Result: strconv.FormatInt(txfee.TxCount,10)})
+	w.WriteJson(&ReplyConfirmedTxCount{Result: strconv.FormatInt(txfee.TxCount, 10)})
 }
 
 // 获取交易信息
@@ -134,8 +159,14 @@ func (c *Client) GetTxInfo(w rest.ResponseWriter, r *rest.Request) {
 
 // 获取区块信息
 func (c *Client) GetBlockInfo(w rest.ResponseWriter, r *rest.Request) {
-
-	height, err := strconv.ParseInt(r.Request.FormValue("height"), 10, 64)
+	var req RequestH
+	if err := r.DecodeJsonPayload(&req); err != nil {
+		rest.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	height, err := strconv.ParseInt(req.Height, 10, 64)
+	//height, err := strconv.ParseInt(r.Request.FormValue("height"), 10, 64)
+	fmt.Println("hegiht:", height)
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -150,8 +181,8 @@ func (c *Client) GetBlockInfo(w rest.ResponseWriter, r *rest.Request) {
 		TxCount: int(blockInfo.Head.TxCount),
 		Hash:    blockInfo.Head.Hash,
 		PreHash: blockInfo.Head.ParentHash,
-		//时间直接字符串化处理
-		CreateTime: strconv.FormatInt(blockInfo.Head.BlockTime, 10),
+		//时间直接字符串化处理,时间戳19位
+		CreateTime: strconv.FormatInt(blockInfo.Head.BlockTime*1e9, 10),
 		TxHashList: blockInfo.TxHashes,
 	})
 }
@@ -163,11 +194,11 @@ func (c *Client) CreateTx(w rest.ResponseWriter, r *rest.Request) {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s,_:=strconv.ParseInt(size.Size,64,10)
+	s, _ := strconv.ParseInt(size.Size, 10, 64)
 	_, priv := genaddress()
 	//构造存证交易
 	tx := txPool.Get().(*types.Transaction)
-	fmt.Println("execAddr:",execAddr)
+	fmt.Println("execAddr:", execAddr)
 	tx.To = execAddr
 	tx.Fee = rand.Int63()
 	tx.Nonce = time.Now().UnixNano()
@@ -180,7 +211,6 @@ func (c *Client) CreateTx(w rest.ResponseWriter, r *rest.Request) {
 	w.WriteJson(&ReplyTx{
 		TxContent: common.ToHex(types.Encode(tx)),
 	})
-
 }
 
 // 发送交易
@@ -190,20 +220,58 @@ func (c *Client) SendTx(w rest.ResponseWriter, r *rest.Request) {
 	//	rest.Error(w, err.Error(), http.StatusInternalServerError)
 	//	return
 	//}
-	tx,err :=ioutil.ReadAll(r.Body)
-	if err !=nil {
-			rest.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-	}
-
-	fmt.Println("tx:",string(tx))
-	hash, err := c.GetLBClient().SendTransaction(string(tx))
+	tx, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	data, _ := common.FromHex(string(tx))
+	var tr types.Transaction
+	types.Decode(data, &tr)
 	//计数器，区块链系统接收了多少条数据
 	atomic.AddUint64(&count, 1)
-	w.WriteJson(&ReplyTxHash{ID: hash})
+	w.WriteJson(&ReplyTxHash{ID: common.ToHex(tr.Hash())})
+	//异步转发处理
+	go func(tx *types.Transaction) {
+		reply, err := c.GetGrpcClient().SendTransaction(context.Background(), tx)
+		if err != nil || !reply.IsOk {
+			UnSendedTxMap.Store(common.ToHex(tx.Hash()), *tx)
+		}
+	}(&tr)
+
+	//reply, err := c.GetGrpcClient().SendTransaction(context.Background(), &tr)
+	//if err != nil {
+	//	rest.Error(w, err.Error(), http.StatusInternalServerError)
+	//	return
+	//}
+	//if reply.IsOk {
+	//	//计数器，区块链系统接收了多少条数据
+	//	atomic.AddUint64(&count, 1)
+	//	w.WriteJson(&ReplyTxHash{ID: common.ToHex(reply.Msg)})
+	//} else {
+	//	rest.Error(w, fmt.Errorf("The service did not handle the request properly!").Error(), http.StatusInternalServerError)
+	//	return
+	//}
+	//reply, err := c.GetGrpcClient().SendTransaction(context.Background(), &tr)
+	//if err != nil {
+	//	rest.Error(w, err.Error(), http.StatusInternalServerError)
+	//	return
+	//}
+	//if reply.IsOk {
+	//	//计数器，区块链系统接收了多少条数据
+	//	atomic.AddUint64(&count, 1)
+	//	w.WriteJson(&ReplyTxHash{ID: common.ToHex(reply.Msg)})
+	//} else {
+	//	rest.Error(w, fmt.Errorf("The service did not handle the request properly!").Error(), http.StatusInternalServerError)
+	//	return
+	//}
+	//hash, err := c.GetLBClient().SendTransaction(string(tx))
+	//if err != nil {
+	//	rest.Error(w, err.Error(), http.StatusInternalServerError)
+	//	return
+	//}
+	////计数器，区块链系统接收了多少条数据
+	//atomic.AddUint64(&count, 1)
+	//w.WriteJson(&ReplyTxHash{ID: hash})
 
 }
