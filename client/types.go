@@ -189,8 +189,9 @@ type RequestTx struct {
 type RequestH struct {
 	Height string `json:"height"`
 }
-type TxSize struct {
-	Size string `json:"size"`
+type TxType struct {
+	Size       string `json:"size"`
+	IsTransfer bool   `json:"istransfer"`
 }
 
 // ReplyHash reply hash string json

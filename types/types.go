@@ -10,7 +10,9 @@ import (
 type Config struct {
 	JsonRpc []string `yaml:"jsonrpc"`
 	GRpc    []string `yaml:"grpc"`
+	Async   bool     `yaml:"async"`
 	Limiter int      `yaml:"limiter"`
+	Privkey string   `yaml:"privkey"`
 }
 
 func ReadConf(path string) *Config {

@@ -59,4 +59,7 @@ type Tasks interface {
 
 	// 发送交易
 	SendTx(w rest.ResponseWriter, r *rest.Request)
+
+	// 查询余额
+	GetBalance(w rest.ResponseWriter, r *rest.Request)
 }

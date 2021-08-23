@@ -32,13 +32,25 @@ func TestJSONClient_SendTx(t *testing.T) {
 	var tr types.Transaction
 	types.Decode(data, &tr)
 	end := time.Now().UnixNano()
-	fmt.Printf("执行消耗的时间为:%v秒", end-start)
+	fmt.Printf("执行消耗的时间为 %d纳秒", end-start)
 	fmt.Println(tr)
+}
+
+func TestTransferTx(t *testing.T) {
+	InitPrivKey("cc38546e9e659d15e6b4893f0ab32a06d103931a8230b0bde71459d2b27d6944")
+	tx := createTransferTx()
+	jsonclient := NewJSONClient("", "http://123.60.55.90:8801")
+	hash, err := jsonclient.SendTransaction(common.ToHex(types.Encode(tx)))
+	if err != nil {
+		t.Error(err)
+	}
+	t.Log(hash)
+
 }
 
 func TestRand(t *testing.T) {
 	for i := 0; i < 100; i++ {
-		t.Log(rand.Intn(3))
+		t.Log(rand.Intn(1))
 	}
 	t.Log(strconv.FormatInt(10*1e9, 10))
 }
