@@ -53,7 +53,7 @@ func createWriteTx(size int) *types.Transaction {
 }
 
 //构造转账交易
-func createTransferTx() *types.Transaction {
+func createTransferTx(priv crypto.PrivKey) *types.Transaction {
 	addr, _ := genaddress()
 	tx := transferTxPool.Get().(*types.Transaction)
 	tx.Fee = fee
@@ -67,7 +67,7 @@ func createTransferTx() *types.Transaction {
 	tx.Payload = types.Encode(&action)
 	tx.To = coinsExecAddr
 	//交易签名
-	tx.Sign(types.SECP256K1, privkey)
+	tx.Sign(types.SECP256K1, priv)
 	return tx
 }
 

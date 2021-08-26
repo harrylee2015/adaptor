@@ -77,3 +77,17 @@ func BenchmarkSingleConn(b *testing.B) {
 	}
 
 }
+
+func TestRangeChannel(t *testing.T)  {
+	ch :=make(chan int,10)
+	for i:=0;i<10;i++{
+		ch<-i
+	}
+	for v :=range ch{
+		if v ==2{
+			continue
+		}
+		t.Log(v)
+	}
+
+}

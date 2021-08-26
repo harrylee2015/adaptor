@@ -62,4 +62,7 @@ type Tasks interface {
 
 	// 查询余额
 	GetBalance(w rest.ResponseWriter, r *rest.Request)
+
+	// get payload
+	GetPayload(w rest.ResponseWriter, r *rest.Request)
 }

@@ -36,18 +36,6 @@ func TestJSONClient_SendTx(t *testing.T) {
 	fmt.Println(tr)
 }
 
-func TestTransferTx(t *testing.T) {
-	InitPrivKey("cc38546e9e659d15e6b4893f0ab32a06d103931a8230b0bde71459d2b27d6944")
-	tx := createTransferTx()
-	jsonclient := NewJSONClient("", "http://123.60.55.90:8801")
-	hash, err := jsonclient.SendTransaction(common.ToHex(types.Encode(tx)))
-	if err != nil {
-		t.Error(err)
-	}
-	t.Log(hash)
-
-}
-
 func TestRand(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		t.Log(rand.Intn(1))
