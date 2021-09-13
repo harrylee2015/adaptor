@@ -91,7 +91,7 @@ func (c *Client) SendTransaction() {
 			grpcClient := c.GetGrpcClient(index)
 			txs := &types.Transactions{Txs: make([]*types.Transaction, 0, c.batchNum)}
 			mutex := sync.Mutex{}
-			ticker := time.Tick(2*time.Second)
+			ticker := time.Tick(2 * time.Second)
 			for {
 				select {
 				case tx, ok := <-c.txChan:
@@ -101,11 +101,16 @@ func (c *Client) SendTransaction() {
 					txs.Txs = append(txs.Txs, tx)
 					if len(txs.Txs) == c.batchNum {
 						mutex.Lock()
-						_, err := grpcClient.SendTransactions(context.Background(), txs)
+						reply, err := grpcClient.SendTransactions(context.Background(), txs)
 						if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
 							log.Println(err)
 							time.Sleep(1 * time.Second)
-							for _, t := range txs.Txs {
+							for _, t := range txs.Txs[len(reply.GetHashes()):] {
+								c.retryTxChan <- t
+							}
+						} else if err != nil && strings.Contains(err.Error(), types.ErrTxExist.Error()) {
+							log.Println(err)
+							for _, t := range txs.Txs[len(reply.GetHashes())+1:] {
 								c.retryTxChan <- t
 							}
 						}
@@ -116,10 +121,16 @@ func (c *Client) SendTransaction() {
 
 					if len(txs.Txs) != 0 {
 						mutex.Lock()
-						_, err := grpcClient.SendTransactions(context.Background(), txs)
+						reply, err := grpcClient.SendTransactions(context.Background(), txs)
 						if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
 							log.Println(err)
-							for _, t := range txs.Txs {
+							time.Sleep(1 * time.Second)
+							for _, t := range txs.Txs[len(reply.GetHashes()):] {
+								c.retryTxChan <- t
+							}
+						} else if err != nil && strings.Contains(err.Error(), types.ErrTxExist.Error()) {
+							log.Println(err)
+							for _, t := range txs.Txs[len(reply.GetHashes())+1:] {
 								c.retryTxChan <- t
 							}
 						}
