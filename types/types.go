@@ -12,6 +12,7 @@ type Config struct {
 	GRpc    []string `yaml:"grpc"`
 	Async   bool     `yaml:"async"`
 	Limiter int      `yaml:"limiter"`
+	BatchNum int     `yaml:"batchnum"`
 	Privkey string   `yaml:"privkey"`
 }
 

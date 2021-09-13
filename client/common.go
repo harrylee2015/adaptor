@@ -4,6 +4,7 @@ import (
 	"github.com/33cn/chain33/common"
 	"github.com/33cn/chain33/common/address"
 	"github.com/33cn/chain33/common/crypto"
+	"github.com/33cn/chain33/system/crypto/none"
 	cty "github.com/33cn/chain33/system/dapp/coins/types"
 	"github.com/33cn/chain33/types"
 	"math/rand"
@@ -48,7 +49,8 @@ func createWriteTx(size int) *types.Transaction {
 	//tx.Expire = height + types.TxHeightFlag + types.LowAllowPackHeight
 	tx.Payload = RandStringBytes(size)
 	//交易签名
-	tx.Sign(types.SECP256K1, priv)
+	//tx.Sign(types.SECP256K1, priv)
+	tx.Signature=&types.Signature{Ty:none.ID,Pubkey:priv.PubKey().Bytes()}
 	return tx
 }
 
@@ -67,7 +69,8 @@ func createTransferTx(priv crypto.PrivKey) *types.Transaction {
 	tx.Payload = types.Encode(&action)
 	tx.To = coinsExecAddr
 	//交易签名
-	tx.Sign(types.SECP256K1, priv)
+	//tx.Sign(types.SECP256K1, priv)
+	tx.Signature=&types.Signature{Ty:none.ID,Pubkey:priv.PubKey().Bytes()}
 	return tx
 }
 
