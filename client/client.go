@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const fee = 1e6
@@ -89,55 +88,12 @@ func (c *Client) SendTransaction() {
 	for i := 0; i < c.Limiter; i++ {
 		go func(index int) {
 			grpcClient := c.GetGrpcClient(index)
-			txs := &types.Transactions{Txs: make([]*types.Transaction, 0, c.batchNum)}
-			mutex := sync.Mutex{}
-			ticker := time.Tick(2 * time.Second)
-			for {
-				select {
-				case tx, ok := <-c.txChan:
-					if !ok {
-						return
-					}
-					txs.Txs = append(txs.Txs, tx)
-					if len(txs.Txs) == c.batchNum {
-						mutex.Lock()
-						reply, err := grpcClient.SendTransactions(context.Background(), txs)
-						if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
-							log.Println(err)
-							time.Sleep(1 * time.Second)
-							for _, t := range txs.Txs[len(reply.GetHashes()):] {
-								c.retryTxChan <- t
-							}
-						} else if err != nil && strings.Contains(err.Error(), types.ErrTxExist.Error()) {
-							log.Println(err)
-							for _, t := range txs.Txs[len(reply.GetHashes())+1:] {
-								c.retryTxChan <- t
-							}
-						}
-						txs.Txs = txs.Txs[:0]
-						mutex.Unlock()
-					}
-				case <-ticker:
-
-					if len(txs.Txs) != 0 {
-						mutex.Lock()
-						reply, err := grpcClient.SendTransactions(context.Background(), txs)
-						if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
-							log.Println(err)
-							time.Sleep(1 * time.Second)
-							for _, t := range txs.Txs[len(reply.GetHashes()):] {
-								c.retryTxChan <- t
-							}
-						} else if err != nil && strings.Contains(err.Error(), types.ErrTxExist.Error()) {
-							log.Println(err)
-							for _, t := range txs.Txs[len(reply.GetHashes())+1:] {
-								c.retryTxChan <- t
-							}
-						}
-						txs.Txs = txs.Txs[:0]
-						mutex.Unlock()
-					}
+			for tx := range c.txChan {
+				_, err := grpcClient.SendTransaction(context.Background(), tx)
+				if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
+					c.retryTxChan <- tx
 				}
+
 			}
 		}(i)
 
