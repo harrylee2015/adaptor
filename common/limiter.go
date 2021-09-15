@@ -3,7 +3,7 @@ package common
 type (
 	ChannelLimiter struct {
 		bufferChannel chan int
-		index int
+		index         int
 	}
 )
 
@@ -14,14 +14,14 @@ func NewChannelLimiter(limit int) *ChannelLimiter {
 func (l *ChannelLimiter) Allow() bool {
 	select {
 	case l.bufferChannel <- 1:
-		 l.index++
+		l.index++
 		return true
 	default:
 		return false
 	}
 }
 
-func (l *ChannelLimiter) GetIndex() int{
+func (l *ChannelLimiter) GetIndex() int {
 	return l.index
 }
 
@@ -34,5 +34,3 @@ func (l *ChannelLimiter) Release() bool {
 func (l *ChannelLimiter) Close() {
 	close(l.bufferChannel)
 }
-
-

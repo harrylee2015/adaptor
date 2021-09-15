@@ -10,6 +10,17 @@ import (
 	"math/rand"
 	"time"
 )
+
+var addrPool []string
+var addrNum = 1000
+
+func init() {
+	addrPool = make([]string, addrNum)
+	for i := 0; i < addrNum; i++ {
+		addrPool[i], _ = genaddress()
+	}
+}
+
 //随机生成一对密钥
 func genaddress() (string, crypto.PrivKey) {
 	cr, err := crypto.New(types.GetSignName("", types.SECP256K1))
@@ -23,6 +34,7 @@ func genaddress() (string, crypto.PrivKey) {
 	addrto := address.PubKeyToAddress(privto.PubKey().Bytes())
 	return addrto.String(), privto
 }
+
 //根据四要字符串获取私钥
 func getprivkey(key string) crypto.PrivKey {
 	cr, err := crypto.New(types.GetSignName("", types.SECP256K1))
@@ -39,6 +51,7 @@ func getprivkey(key string) crypto.PrivKey {
 	}
 	return priv
 }
+
 //构造存证交易
 func createWriteTx(size int) *types.Transaction {
 	_, priv := genaddress()
@@ -50,13 +63,13 @@ func createWriteTx(size int) *types.Transaction {
 	tx.Payload = RandStringBytes(size)
 	//交易签名
 	//tx.Sign(types.SECP256K1, priv)
-	tx.Signature=&types.Signature{Ty:none.ID,Pubkey:priv.PubKey().Bytes()}
+	tx.Signature = &types.Signature{Ty: none.ID, Pubkey: priv.PubKey().Bytes()}
 	return tx
 }
 
 //构造转账交易
 func createTransferTx(priv crypto.PrivKey) *types.Transaction {
-	addr, _ := genaddress()
+	addr := addrPool[rand.Intn(addrNum)]
 	tx := transferTxPool.Get().(*types.Transaction)
 	tx.Fee = fee
 	tx.Nonce = time.Now().UnixNano()
@@ -70,7 +83,7 @@ func createTransferTx(priv crypto.PrivKey) *types.Transaction {
 	tx.To = coinsExecAddr
 	//交易签名
 	//tx.Sign(types.SECP256K1, priv)
-	tx.Signature=&types.Signature{Ty:none.ID,Pubkey:priv.PubKey().Bytes()}
+	tx.Signature = &types.Signature{Ty: none.ID, Pubkey: priv.PubKey().Bytes()}
 	return tx
 }
 

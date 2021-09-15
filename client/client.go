@@ -7,10 +7,10 @@ import (
 	"github.com/33cn/chain33/common"
 	"github.com/33cn/chain33/common/address"
 	"github.com/33cn/chain33/common/crypto"
+	"github.com/33cn/chain33/common/log/log15"
 	"github.com/33cn/chain33/types"
 	"github.com/ant0ine/go-json-rest/rest"
 	"strings"
-	"github.com/33cn/chain33/common/log/log15"
 	"time"
 
 	//"github.com/shimingyah/pool"
@@ -59,7 +59,9 @@ type Client struct {
 	//retry tx chan
 	retryTxChan chan *types.Transaction
 	//batchNum
-	batchNum int
+	batchNum     int
+	mempoolCache int
+	ratio        int
 	sync.RWMutex
 }
 
@@ -81,7 +83,16 @@ func NewClient(conf *Config) *Client {
 	}
 	txChan := make(chan *types.Transaction, conf.Limiter*10000)
 	retryTxChan := make(chan *types.Transaction, conf.Limiter*10000)
-	return &Client{JrpcBalancer: jrpcBalancer, GrpcBalancer: grpcBalancer, Async: conf.Async, Limiter: conf.Limiter, Priv: getprivkey(conf.Privkey), txChan: txChan, retryTxChan: retryTxChan, batchNum: conf.BatchNum}
+	return &Client{
+		JrpcBalancer: jrpcBalancer,
+		GrpcBalancer: grpcBalancer,
+		Async:        conf.Async, Limiter: conf.Limiter,
+		Priv:   getprivkey(conf.Privkey),
+		txChan: txChan, retryTxChan: retryTxChan,
+		batchNum:     conf.BatchNum,
+		mempoolCache: conf.MempoolCache,
+		ratio:        conf.Ratio,
+	}
 }
 
 //处理txchan
@@ -91,7 +102,8 @@ func (c *Client) SendTransaction() {
 		go func(index int) {
 			grpcClient := c.GetGrpcClient(index)
 			for tx := range c.txChan {
-				if !checkMempoolSize(grpcClient) {
+				if !c.checkMempoolSize(grpcClient) {
+					c.retryTxChan <- tx
 					time.Sleep(time.Second)
 					continue
 				}
@@ -102,7 +114,6 @@ func (c *Client) SendTransaction() {
 
 			}
 		}(i)
-
 	}
 }
 
@@ -129,8 +140,8 @@ func (c *Client) GetJrpcClient() *JSONClient {
 	return jrcpClient
 }
 
-func checkMempoolSize(client types.Chain33Client) bool {
-	peerList, err :=client.GetPeerInfo(context.Background(), &types.P2PGetPeerReq{})
+func (c *Client) checkMempoolSize(client types.Chain33Client) bool {
+	peerList, err := client.GetPeerInfo(context.Background(), &types.P2PGetPeerReq{})
 	if err != nil {
 		log15.Error("GetPeerInfo fail", "err", err)
 		return false
@@ -142,9 +153,7 @@ func checkMempoolSize(client types.Chain33Client) bool {
 		return false
 	}
 
-	ratio := 7
-	poolCacheSize := 500000
-	if info.MempoolSize > int32(poolCacheSize * ratio / 10) {
+	if info.MempoolSize > int32(c.mempoolCache*c.ratio/10) {
 		log15.Info("MempoolSize is busy", "size", info.MempoolSize)
 		return false
 	}
@@ -161,7 +170,6 @@ func checkMempoolSize(client types.Chain33Client) bool {
 //	}
 //	return types.NewChain33Client(conn.Value()), nil
 //}
-
 
 // 获取最新区块高度
 func (c *Client) GetBlockHeight(w rest.ResponseWriter, r *rest.Request) {

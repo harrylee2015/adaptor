@@ -12,14 +12,16 @@ import (
 func main() {
 	conf := types.ReadConf("conf.yaml")
 	//并发数限制为压测机器cpu核数的2倍
-	if conf.Limiter==0{
-		conf.Limiter=runtime.NumCPU()*2
+	if conf.Limiter == 0 {
+		conf.Limiter = runtime.NumCPU() * 2
 	}
-	if conf.BatchNum==0{
-		conf.BatchNum=200
+	if conf.BatchNum == 0 {
+		conf.BatchNum = 200
 	}
 	log.Println("limiter:", conf.Limiter)
 	log.Println("batchNum:", conf.BatchNum)
+	log.Println("mempoolCache:", conf.MempoolCache)
+	log.Println("ratio:", conf.Ratio)
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	cli := client.NewClient(conf)
 
