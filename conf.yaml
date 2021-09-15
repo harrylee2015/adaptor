@@ -9,5 +9,7 @@ async: true
 #limiter: 16
 ## 批量发送交易数量设置(默认200）
 #batchnum: 200
+mempoolCache: 500000
+ratio: 8
 #转账签名私钥
 privkey: "cc38546e9e659d15e6b4893f0ab32a06d103931a8230b0bde71459d2b27d6944"
