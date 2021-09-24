@@ -221,7 +221,8 @@ type ReplyConfirmedTxCount struct {
 
 //发送交易还回hash
 type ReplyTxHash struct {
-	ID string `json:"ID"`
+	ID        string `json:"ID"`
+	BlockTime string `json:"blocktime"`
 }
 
 //return sign tx

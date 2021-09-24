@@ -224,7 +224,7 @@ func (c *Client) GetTxInfo(w rest.ResponseWriter, r *rest.Request) {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteJson(&ReplyTxHash{ID: common.ToHex(detail.Tx.Hash())})
+	w.WriteJson(&ReplyTxHash{ID: common.ToHex(detail.Tx.Hash()), BlockTime: strconv.FormatInt(detail.Blocktime*1e9, 10)})
 }
 
 // 获取存证信息
