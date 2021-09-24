@@ -248,11 +248,11 @@ func (client *JSONClient) GetTotalTxCount(height int64) (*types.TotalFee, error)
 	}
 	hash = append([]byte("TotalFeeKey:"), hash...)
 	params := types.LocalDBGet{Keys: [][]byte{hash[:]}}
-	res := &types.TotalFee{}
+	res := types.TotalFee{}
 
 	err = client.Call("Chain33.QueryTotalFee", &params, &res)
 	if err != nil {
 		return nil, err
 	}
-	return res, nil
+	return &res, nil
 }

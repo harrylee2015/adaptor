@@ -1,31 +1,35 @@
 package client
 
 import (
-	. "adaptor/common"
 	. "adaptor/types"
 	"context"
 	"fmt"
 	"github.com/33cn/chain33/common"
 	"github.com/33cn/chain33/common/address"
 	"github.com/33cn/chain33/common/crypto"
+	"github.com/33cn/chain33/common/log/log15"
+	cty "github.com/33cn/chain33/system/dapp/coins/types"
 	"github.com/33cn/chain33/types"
 	"github.com/ant0ine/go-json-rest/rest"
-	"github.com/shimingyah/pool"
+	"strings"
+	"time"
+
+	//"github.com/shimingyah/pool"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const fee = 1e6
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ123456789-=_+=/<>!@#$%^&"
 
 var (
-	r     *rand.Rand
-	count uint64
+	r           *rand.Rand
+	count       uint64
 	execAddr    = address.ExecAddress("user.write")
 	writeTxPool = sync.Pool{
 		New: func() interface{} {
@@ -43,81 +47,92 @@ var (
 )
 
 type Client struct {
-	JrpcBalancer    []*JSONClient
-	GrpcBalancer    []types.Chain33Client
-	GrpcConnectPool []pool.Pool
-	Async           bool
-	//限流器
-	Limiter *ChannelLimiter
+	JrpcBalancer []*JSONClient
+	GrpcBalancer []string
+	grpcClient   types.Chain33Client
+	Async        bool
+	//并发数限制
+	Limiter int
 	//私钥
 	Priv crypto.PrivKey
 	//缓存通道
 	txChan chan *types.Transaction
 	//retry tx chan
 	retryTxChan chan *types.Transaction
+	//batchNum
+	batchNum     int
+	mempoolCache int
+	ratio        int
 	sync.RWMutex
 }
 
 func NewClient(conf *Config) *Client {
 	jrpcBalancer := make([]*JSONClient, len(conf.JsonRpc))
-	grpcBalancer := make([]types.Chain33Client, len(conf.GRpc))
-	grpcConnectPool := make([]pool.Pool, len(conf.GRpc))
+	grpcBalancer := make([]string, len(conf.GRpc))
+	//grpcConnectPool := make([]pool.Pool, len(conf.GRpc))
 	for i, url := range conf.JsonRpc {
 		jrpcBalancer[i] = NewJSONClient("", url)
 	}
 	for i, url := range conf.GRpc {
-		gcli := types.NewChain33Client(newGrpcConn(url))
-		grpcBalancer[i] = gcli
-		p, err := pool.New(url, pool.DefaultOptions)
-		if err != nil {
-			panic(err)
-		}
-		grpcConnectPool[i] = p
+		grpcBalancer[i] = url
+		//grpc连接池暂时设置为常态8个,最大可开64个链接
+		//p, err := pool.New(url, pool.DefaultOptions)
+		//if err != nil {
+		//	panic(err)
+		//}
 	}
+	gcli := types.NewChain33Client(newGrpcConn(conf.GRpc[0]))
 	txChan := make(chan *types.Transaction, conf.Limiter*10000)
 	retryTxChan := make(chan *types.Transaction, conf.Limiter*10000)
-	return &Client{JrpcBalancer: jrpcBalancer, GrpcBalancer: grpcBalancer, GrpcConnectPool: grpcConnectPool, Async: conf.Async, Limiter: NewChannelLimiter(conf.Limiter), Priv: getprivkey(conf.Privkey), txChan: txChan, retryTxChan: retryTxChan}
+	return &Client{
+		JrpcBalancer: jrpcBalancer,
+		GrpcBalancer: grpcBalancer,
+		Async:        conf.Async, Limiter: conf.Limiter,
+		Priv:   getprivkey(conf.Privkey),
+		txChan: txChan, retryTxChan: retryTxChan,
+		batchNum:     conf.BatchNum,
+		mempoolCache: conf.MempoolCache,
+		ratio:        conf.Ratio,
+		grpcClient:   gcli,
+	}
 }
 
 //处理txchan
 func (c *Client) SendTransaction() {
-	for tx := range c.txChan {
-		if c.Limiter.Allow() {
-			cli, err := c.GetClient()
-			if err != nil {
-				c.retryTxChan <- tx
-				//释放令牌
-				c.Limiter.Release()
-				time.Sleep(100*time.Millisecond)
-				continue
-			}
-			go func(tr *types.Transaction, grpcClient types.Chain33Client) {
-				//释放令牌
-				defer c.Limiter.Release()
-				reply, _ := grpcClient.SendTransaction(context.Background(), tr)
-				if !reply.IsOk {
-					c.retryTxChan <- tr
+	//同时开启多个线程进行并发发送交易
+	for i := 0; i < c.Limiter; i++ {
+		go func(index int) {
+			grpcClient := c.GetGrpcClient(index)
+			for tx := range c.txChan {
+				if !c.checkMempoolSize(grpcClient) {
+					c.retryTxChan <- tx
+					time.Sleep(time.Second)
+					continue
 				}
-			}(tx, cli)
-			continue
-		}
-		c.retryTxChan <- tx
-		time.Sleep(100*time.Millisecond)
+				_, err := grpcClient.SendTransaction(context.Background(), tx)
+				if err != nil && !strings.Contains(err.Error(), types.ErrTxExist.Error()) {
+					c.retryTxChan <- tx
+				}
+
+			}
+		}(i)
 	}
 }
 
 //retry sendTx
 func (c *Client) RetrySendTransaction() {
 	for tx := range c.retryTxChan {
-        c.txChan<-tx
+		c.txChan <- tx
 	}
 }
 
-func (c *Client) GetGrpcClient() types.Chain33Client {
+func (c *Client) GetGrpcClient(index int) types.Chain33Client {
 	c.RLock()
-	grpcClient := c.GrpcBalancer[rand.Intn(len(c.GrpcBalancer))]
+	//取余负载
+	url := c.GrpcBalancer[index%len(c.GrpcBalancer)]
 	c.RUnlock()
-	return grpcClient
+	gcli := types.NewChain33Client(newGrpcConn(url))
+	return gcli
 }
 
 func (c *Client) GetJrpcClient() *JSONClient {
@@ -127,20 +142,35 @@ func (c *Client) GetJrpcClient() *JSONClient {
 	return jrcpClient
 }
 
-func (c *Client) GetClient() (types.Chain33Client, error) {
-	c.RLock()
-	p := c.GrpcConnectPool[rand.Intn(len(c.GrpcConnectPool))]
-	c.RUnlock()
-	conn, err := p.Get()
+func (c *Client) checkMempoolSize(client types.Chain33Client) bool {
+	peerList, err := client.GetPeerInfo(context.Background(), &types.P2PGetPeerReq{})
 	if err != nil {
-		return nil, err
+		log15.Error("GetPeerInfo fail", "err", err)
+		return false
 	}
-	return types.NewChain33Client(conn.Value()), nil
+	peers := peerList.Peers
+	info := peers[len(peers)-1]
+	if info.Self != true {
+		log15.Error("Not self info", "err", err)
+		return false
+	}
+
+	if info.MempoolSize > int32(c.mempoolCache*c.ratio/10) {
+		log15.Info("MempoolSize is busy", "size", info.MempoolSize)
+		return false
+	}
+	return true
+}
+
+func (c *Client) getGrpcClient() types.Chain33Client {
+	c.RLock()
+	defer c.RUnlock()
+	return c.grpcClient
 }
 
 // 获取最新区块高度
 func (c *Client) GetBlockHeight(w rest.ResponseWriter, r *rest.Request) {
-	header, err := c.GetGrpcClient().GetLastHeader(context.Background(), &types.ReqNil{})
+	header, err := c.getGrpcClient().GetLastHeader(context.Background(), &types.ReqNil{})
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -149,7 +179,7 @@ func (c *Client) GetBlockHeight(w rest.ResponseWriter, r *rest.Request) {
 
 // 节点总数
 func (c *Client) GetNodeCount(w rest.ResponseWriter, r *rest.Request) {
-	peerList, err := c.GetGrpcClient().GetPeerInfo(context.Background(), &types.P2PGetPeerReq{})
+	peerList, err := c.getGrpcClient().GetPeerInfo(context.Background(), &types.P2PGetPeerReq{})
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -163,7 +193,7 @@ func (c *Client) GetTxAccepted(w rest.ResponseWriter, r *rest.Request) {
 
 // 已经打包确认交易总数
 func (c *Client) GetTxConfirmed(w rest.ResponseWriter, r *rest.Request) {
-	header, err := c.GetGrpcClient().GetLastHeader(context.Background(), &types.ReqNil{})
+	header, err := c.getGrpcClient().GetLastHeader(context.Background(), &types.ReqNil{})
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -173,6 +203,7 @@ func (c *Client) GetTxConfirmed(w rest.ResponseWriter, r *rest.Request) {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Println("confirmedTxCount:", txfee.TxCount)
 	w.WriteJson(&ReplyConfirmedTxCount{Result: strconv.FormatInt(txfee.TxCount, 10)})
 }
 
@@ -187,12 +218,8 @@ func (c *Client) GetTxInfo(w rest.ResponseWriter, r *rest.Request) {
 	data, _ := common.FromHex(string(tx))
 	var tr types.Transaction
 	types.Decode(data, &tr)
-	client, err := c.GetClient()
-	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	detail, err := client.QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
+
+	detail, err := c.getGrpcClient().QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -211,17 +238,12 @@ func (c *Client) GetWriteInfo(w rest.ResponseWriter, r *rest.Request) {
 	data, _ := common.FromHex(string(tx))
 	var tr types.Transaction
 	types.Decode(data, &tr)
-	client, err := c.GetClient()
+	_, err = c.getGrpcClient().QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	detail, err := client.QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
-	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteJson(common.ToHex(detail.Tx.Payload))
+	w.WriteJson("ok")
 }
 
 // 获取账户余额
@@ -229,20 +251,19 @@ func (c *Client) GetBalance(w rest.ResponseWriter, r *rest.Request) {
 	//TODO 这个接口不可用
 	tx, err := ioutil.ReadAll(r.Body)
 	if err != nil {
+		log15.Error("can't parse body", err)
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	data, _ := common.FromHex(string(tx))
 	var tr types.Transaction
 	types.Decode(data, &tr)
-	client, err := c.GetClient()
+	var action cty.CoinsAction
+	types.Decode(tr.GetPayload(), &action)
+	addr := action.GetTransfer().GetTo()
+	detail, err := c.getGrpcClient().GetBalance(context.Background(), &types.ReqBalance{Execer: "coins", Addresses: []string{addr}})
 	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	addr := tr.From()
-	detail, err := client.GetBalance(context.Background(), &types.ReqBalance{Execer: "coins", Addresses: []string{addr}})
-	if err != nil {
+		log15.Error("query failed", err)
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -255,19 +276,17 @@ func (c *Client) GetPayload(w rest.ResponseWriter, r *rest.Request) {
 	//TODO 这个接口不可用
 	tx, err := ioutil.ReadAll(r.Body)
 	if err != nil {
+		log15.Error("can't parse body", err)
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	data, _ := common.FromHex(string(tx))
 	var tr types.Transaction
 	types.Decode(data, &tr)
-	client, err := c.GetClient()
+
+	detail, err := c.getGrpcClient().QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
 	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	detail, err := client.QueryTransaction(context.Background(), &types.ReqHash{Hash: tr.Hash()})
-	if err != nil {
+		log15.Error("query failed", err)
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -359,12 +378,8 @@ func (c *Client) syncSendTx(w rest.ResponseWriter, r *rest.Request) {
 	data, _ := common.FromHex(string(tx))
 	var tr types.Transaction
 	types.Decode(data, &tr)
-	grpcClient, err := c.GetClient()
-	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	reply, err := grpcClient.SendTransaction(context.Background(), &tr)
+
+	reply, err := c.getGrpcClient().SendTransaction(context.Background(), &tr)
 	if err != nil {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -395,12 +410,9 @@ func (c *Client) asyncSendTx(w rest.ResponseWriter, r *rest.Request) {
 	//计数器，区块链系统接收了多少条数据
 	atomic.AddUint64(&count, 1)
 }
+
 //关闭客户端
-func (c *Client)Close(){
+func (c *Client) Close() {
 	close(c.txChan)
 	close(c.retryTxChan)
-	c.Limiter.Close()
-	for _,p :=range c.GrpcConnectPool{
-		p.Close()
-	}
 }
